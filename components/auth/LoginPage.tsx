@@ -1,39 +1,83 @@
+// src/components/auth/LoginPage.tsx
+import React, { useState } from 'react'
+import { supabase } from '../../src/lib/supabaseClient'
+import { useNavigate } from 'react-router-dom'
 
-import React, { useState } from 'react';
-import AuthLayout from './AuthLayout';
-import GoogleButton from './GoogleButton';
-import type { PageContext } from '../../types';
+export default function LoginPage() {
+  const [email, setEmail] = useState('')
+  const [password, setPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+  const navigate = useNavigate()
 
-interface LoginPageProps {
-    onLogin: (email: string, password) => boolean;
-    navigateTo: (page: string, context?: PageContext) => void;
-    onGoogleSignIn: () => void;
+  async function handleSignIn(e?: React.FormEvent) {
+    if (e) e.preventDefault()
+    setLoading(true)
+    setMessage(null)
+
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      })
+
+      if (error) {
+        setMessage(error.message)
+      } else {
+        setMessage('Signed in!')
+        // supabase stores session automatically in localStorage
+        setTimeout(() => navigate('/'), 300)
+      }
+    } catch (err: any) {
+      setMessage(err.message || 'Unexpected error')
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  async function handleMagicLink() {
+    // optional: send magic link instead of password
+    if (!email) {
+      setMessage('Enter your email to receive a magic link.')
+      return
+    }
+    setLoading(true)
+    const { data, error } = await supabase.auth.signInWithOtp({ email })
+    if (error) setMessage(error.message)
+    else setMessage('Magic link sent — check your email.')
+    setLoading(false)
+  }
+
+  return (
+    <div className="max-w-md mx-auto p-4">
+      <h2 className="text-2xl font-bold mb-4">Sign in</h2>
+      <form onSubmit={handleSignIn} className="space-y-3">
+        <input
+          required
+          type="email"
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="w-full p-2 border rounded"
+        />
+        <input
+          required
+          type="password"
+          placeholder="Password"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="w-full p-2 border rounded"
+        />
+        <div className="flex items-center gap-2">
+          <button disabled={loading} className="px-4 py-2 bg-green-600 text-white rounded">
+            {loading ? 'Signing in...' : 'Sign in'}
+          </button>
+          <button type="button" onClick={handleMagicLink} disabled={loading} className="px-3 py-2 border rounded">
+            Send magic link
+          </button>
+        </div>
+        {message && <div className="mt-2 text-sm">{message}</div>}
+      </form>
+    </div>
+  )
 }
-
-const LoginPage: React.FC<LoginPageProps> = ({ onLogin, navigateTo, onGoogleSignIn }) => {
-    const [email, setEmail] = useState('');
-    const [password, setPassword] = useState('');
-    const [error, setError] = useState('');
-    const handleSubmit = (e: React.FormEvent) => {
-        e.preventDefault();
-        setError('');
-        if (!onLogin(email, password)) {
-            setError('ZAP! Invalid email or password.');
-        }
-    };
-    return (
-        <AuthLayout title="Sign In!">
-            <form onSubmit={handleSubmit} className="space-y-4">
-                {error && <p className="text-red-500 text-sm text-center font-bold">{error}</p>}
-                <div><label className="block font-medium mb-1">Email</label><input type="email" value={email} onChange={e => setEmail(e.target.value)} required /></div>
-                <div><label className="block font-medium mb-1">Password</label><input type="password" value={password} onChange={e => setPassword(e.target.value)} required /></div>
-                <button type="submit" className="w-full py-2">Sign In</button>
-            </form>
-            <div className="relative my-4"><div className="absolute inset-0 flex items-center"><span className="w-full border-t"></span></div><div className="relative flex justify-center text-xs uppercase"><span className="px-2">Or continue with</span></div></div>
-            <GoogleButton onClick={onGoogleSignIn} text="Sign in with Google" />
-            <p className="text-center text-sm">Don't have an account? <button onClick={() => navigateTo('signup')} className="text-blue-500">Sign Up</button></p>
-        </AuthLayout>
-    );
-};
-
-export default LoginPage;
