@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import type { Club, PageContext, Post, User } from './types';
-import { database } from './supabase-db.ts'; // Changed from './db'
+import { database } from './supabase_db.ts'; // Changed from './db'
 
 import ComicBookStyles from './components/layout/ComicBookStyles';
 import Modal from './components/shared/Modal';
