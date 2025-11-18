@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import type { Club, PageContext, Post, User } from './types';
-import { database } from './supabase_db.ts'; // Changed from './db'
+import { database } from './db-supabase';
+import { auth } from './lib/auth'; // New auth service
 
 import ComicBookStyles from './components/layout/ComicBookStyles';
 import Modal from './components/shared/Modal';
@@ -21,22 +22,54 @@ import CreateClubPage from './components/creator/CreateClubPage';
 import ClubManagementPage from './components/creator/ClubManagementPage';
 
 export default function App() {
-    const [currentUser, setCurrentUser] = useState<User | null>(() => {
-        try {
-            const saved = localStorage.getItem('hakkon_currentUser');
-            return saved ? JSON.parse(saved) : null;
-        } catch (error) {
-            console.error("Failed to parse currentUser from localStorage", error);
-            return null;
-        }
-    });
-
+    const [currentUser, setCurrentUser] = useState<User | null>(null);
+    const [authLoading, setAuthLoading] = useState(true);
     const [appData, setAppData] = useState<{ clubs: Club[]; users: { [email: string]: User } }>({ 
         clubs: [], 
         users: {} 
     });
     const [isLoading, setIsLoading] = useState(true);
     const { clubs, users } = appData;
+
+    // Check for existing session on mount
+    useEffect(() => {
+        const initAuth = async () => {
+            try {
+                const session = await auth.getSession();
+                if (session?.user) {
+                    const appUser = await auth.getOrCreateAppUser(session.user);
+                    setCurrentUser(appUser);
+                }
+            } catch (error) {
+                console.error('Auth initialization error:', error);
+            } finally {
+                setAuthLoading(false);
+            }
+        };
+
+        initAuth();
+
+        // Listen for auth changes
+        const { data: authListener } = auth.onAuthStateChange(async (authUser) => {
+            if (authUser) {
+                try {
+                    const appUser = await auth.getOrCreateAppUser(authUser);
+                    setCurrentUser(appUser);
+                    setHistory([]);
+                    navigateTo(appUser.role === 'fan' ? 'fanDashboard' : 'creatorDashboard');
+                } catch (error) {
+                    console.error('Auth state change error:', error);
+                }
+            } else {
+                setCurrentUser(null);
+                setPage('login');
+            }
+        });
+
+        return () => {
+            authListener?.subscription.unsubscribe();
+        };
+    }, []);
 
     // Load initial data
     useEffect(() => {
@@ -52,8 +85,11 @@ export default function App() {
                 setIsLoading(false);
             }
         };
-        loadData();
-    }, []);
+        
+        if (!authLoading) {
+            loadData();
+        }
+    }, [authLoading]);
 
     // Subscribe to database changes
     useEffect(() => {
@@ -64,10 +100,6 @@ export default function App() {
         return () => unsubscribe();
     }, []);
 
-    useEffect(() => {
-        localStorage.setItem('hakkon_currentUser', JSON.stringify(currentUser));
-    }, [currentUser]);
-
     const [page, setPage] = useState(() => {
         if (currentUser) {
             return currentUser.role === 'fan' ? 'fanDashboard' : 'creatorDashboard';
@@ -77,7 +109,7 @@ export default function App() {
 
     const [pageContext, setPageContext] = useState<PageContext>({});
     const [history, setHistory] = useState<{ page: string; pageContext: PageContext }[]>([]);
-    const [pendingUser, setPendingUser] = useState<{ name: string; email: string; password: string; } | null>(null);
+    const [pendingUser, setPendingUser] = useState<{ name: string; email: string; password: string; authUserId?: string } | null>(null);
     const [modal, setModal] = useState({ isOpen: false, title: '', message: '' });
 
     const showAlert = (title: string, message: string) => {
@@ -101,34 +133,43 @@ export default function App() {
     
     const handleLogin = async (email: string, password: string) => {
         try {
-            const user = await database.findUserByEmail(email);
-            if (user && user.password === password) {
-                setCurrentUser(user);
+            const { user } = await auth.signInWithPassword(email, password);
+            if (user) {
+                const appUser = await auth.getOrCreateAppUser(user);
+                setCurrentUser(appUser);
                 setHistory([]);
-                navigateTo(user.role === 'fan' ? 'fanDashboard' : 'creatorDashboard');
+                navigateTo(appUser.role === 'fan' ? 'fanDashboard' : 'creatorDashboard');
                 return true;
             }
             return false;
-        } catch (error) {
+        } catch (error: any) {
             console.error('Login error:', error);
-            showAlert('ERROR', 'Failed to login. Please try again.');
+            showAlert('ERROR', error.message || 'Failed to login. Please try again.');
             return false;
         }
     };
 
     const initiateSignUp = async (name: string, email: string, password: string) => {
         try {
-            const existingUser = await database.findUserByEmail(email);
-            if (existingUser) {
-                showAlert("WHOOPS!", "A user with this email already exists.");
-                return false;
+            const { user } = await auth.signUp(email, password, name);
+            if (user) {
+                // Check if email confirmation is required
+                if (user.identities && user.identities.length === 0) {
+                    showAlert("CHECK EMAIL", "Please check your email to confirm your account.");
+                    return false;
+                }
+                setPendingUser({ name, email, password, authUserId: user.id });
+                navigateTo('roleChooser');
+                return true;
             }
-            setPendingUser({ name, email, password });
-            navigateTo('roleChooser');
-            return true;
-        } catch (error) {
+            return false;
+        } catch (error: any) {
             console.error('Sign up error:', error);
-            showAlert('ERROR', 'Failed to check email. Please try again.');
+            if (error.message?.includes('already registered')) {
+                showAlert("WHOOPS!", "A user with this email already exists.");
+            } else {
+                showAlert('ERROR', error.message || 'Failed to create account. Please try again.');
+            }
             return false;
         }
     };
@@ -136,57 +177,42 @@ export default function App() {
     const completeSignUp = async (role: 'fan' | 'creator') => {
         if (!pendingUser) return;
         try {
-            const { name, email, password } = pendingUser;
-            const newUser: Omit<User, 'id'> = {
-                name,
-                email,
-                password,
-                role,
-                avatar: `https://placehold.co/100x100/A78BFA/FFFFFF?text=${name.charAt(0)}`,
-                bio: '',
-                followedClubs: [],
-                managedClubs: []
-            };
-
-            await database.addUser(newUser);
-            // Fetch the created user to get the ID
-            const createdUser = await database.findUserByEmail(email);
-            if (createdUser) {
-                setCurrentUser(createdUser);
+            const authUser = await auth.getAuthUser();
+            if (authUser) {
+                const appUser = await auth.getOrCreateAppUser(authUser, role);
+                setCurrentUser(appUser);
+                setPendingUser(null);
+                setHistory([]);
+                navigateTo(role === 'fan' ? 'fanDashboard' : 'creatorDashboard');
             }
-            setPendingUser(null);
-            setHistory([]);
-            navigateTo(role === 'fan' ? 'fanDashboard' : 'creatorDashboard');
         } catch (error) {
             console.error('Complete sign up error:', error);
-            showAlert('ERROR', 'Failed to create account. Please try again.');
+            showAlert('ERROR', 'Failed to complete signup. Please try again.');
         }
     };
 
     const handleGoogleSignIn = async () => {
-        const googleUserEmail = 'google.user@example.com';
         try {
-            const existingUser = await database.findUserByEmail(googleUserEmail);
-
-            if (existingUser) {
-                setCurrentUser(existingUser);
-                setHistory([]);
-                navigateTo(existingUser.role === 'fan' ? 'fanDashboard' : 'creatorDashboard');
-            } else {
-                setPendingUser({ name: 'Googler', email: googleUserEmail, password: 'google_password' });
-                navigateTo('roleChooser');
-            }
-        } catch (error) {
+            await auth.signInWithGoogle();
+            // The auth state change listener will handle the rest
+            // User will be redirected back after Google auth
+        } catch (error: any) {
             console.error('Google sign in error:', error);
-            showAlert('ERROR', 'Failed to sign in with Google. Please try again.');
+            showAlert('ERROR', error.message || 'Failed to sign in with Google. Please try again.');
         }
     };
 
-    const handleLogout = () => {
-        setCurrentUser(null);
-        setPage('login');
-        setPageContext({});
-        setHistory([]);
+    const handleLogout = async () => {
+        try {
+            await auth.signOut();
+            setCurrentUser(null);
+            setPage('login');
+            setPageContext({});
+            setHistory([]);
+        } catch (error) {
+            console.error('Logout error:', error);
+            showAlert('ERROR', 'Failed to logout. Please try again.');
+        }
     }
 
     const handleUpdateUser = async (updatedUser: User) => {
@@ -302,8 +328,8 @@ export default function App() {
 
     const allUsers = Object.values(users);
 
-    // Show loading state
-    if (isLoading) {
+    // Show loading state during auth check
+    if (authLoading || isLoading) {
         return (
             <div className="comic-book-style min-h-screen flex items-center justify-center">
                 <ComicBookStyles />
