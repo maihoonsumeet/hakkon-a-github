@@ -1,25 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import type { Club, PageContext, Post, User } from './types';
-import { database } from './db-supabase';
-import { auth } from './lib/auth'; // New auth service
+import type { Club, PageContext, Post, User } from '@/types';
+import { database } from '@/db-supabase';
+import { auth } from '@/lib/auth';
 
-import ComicBookStyles from './components/layout/ComicBookStyles';
-import Modal from './components/shared/Modal';
-import Header from './components/layout/Header';
-import Footer from './components/layout/Footer';
+import ComicBookStyles from '@/components/layout/ComicBookStyles';
+import Modal from '@/components/shared/Modal';
+import Header from '@/components/layout/Header';
+import Footer from '@/components/layout/Footer';
 
-import LoginPage from './components/auth/LoginPage';
-import SignUpPage from './components/auth/SignUpPage';
-import RoleChooserPage from './components/auth/RoleChooserPage';
+import LoginPage from '@/components/auth/LoginPage';
+import SignUpPage from '@/components/auth/SignUpPage';
+import RoleChooserPage from '@/components/auth/RoleChooserPage';
 
-import FanDashboard from './components/fan/FanDashboard';
-import FanProfilePage from './components/fan/FanProfilePage';
-import ClubPublicView from './components/fan/ClubPublicView';
-import PostDetailView from './components/fan/PostDetailView';
+import FanDashboard from '@/components/fan/FanDashboard';
+import FanProfilePage from '@/components/fan/FanProfilePage';
+import ClubPublicView from '@/components/fan/ClubPublicView';
+import PostDetailView from '@/components/fan/PostDetailView';
 
-import CreatorDashboard from './components/creator/CreatorDashboard';
-import CreateClubPage from './components/creator/CreateClubPage';
-import ClubManagementPage from './components/creator/ClubManagementPage';
+import CreatorDashboard from '@/components/creator/CreatorDashboard';
+import CreateClubPage from '@/components/creator/CreateClubPage';
+import ClubManagementPage from '@/components/creator/ClubManagementPage';
 
 export default function App() {
     const [currentUser, setCurrentUser] = useState<User | null>(null);
@@ -31,47 +31,76 @@ export default function App() {
     const [isLoading, setIsLoading] = useState(true);
     const { clubs, users } = appData;
 
-    // Check for existing session on mount
+    // Navigation State
+    const [page, setPage] = useState<string>('login');
+    const [pageContext, setPageContext] = useState<PageContext>({});
+    const [history, setHistory] = useState<{ page: string; pageContext: PageContext }[]>([]);
+    
+    // Auth State
+    const [pendingUser, setPendingUser] = useState<{ name: string; email: string; password: string; authUserId?: string } | null>(null);
+    const [modal, setModal] = useState({ isOpen: false, title: '', message: '' });
+
+    // --- AUTH LOGIC ---
+    
+    // Check for existing session on mount & Listen for auth changes
     useEffect(() => {
-        const initAuth = async () => {
-            try {
-                const session = await auth.getSession();
-                if (session?.user) {
-                    const appUser = await auth.getOrCreateAppUser(session.user);
-                    setCurrentUser(appUser);
-                }
-            } catch (error) {
-                console.error('Auth initialization error:', error);
-            } finally {
-                setAuthLoading(false);
-            }
-        };
-
-        initAuth();
-
-        // Listen for auth changes
         const { data: authListener } = auth.onAuthStateChange(async (authUser) => {
             if (authUser) {
                 try {
-                    const appUser = await auth.getOrCreateAppUser(authUser);
-                    setCurrentUser(appUser);
-                    setHistory([]);
-                    navigateTo(appUser.role === 'fan' ? 'fanDashboard' : 'creatorDashboard');
+                    console.log("Auth user detected:", authUser.email);
+                    
+                    // 1. Try to find the user in the database
+                    // We use the API directly to avoid triggering the "auto-create" logic prematurely
+                    const existingUser = await database.findUserByEmail(authUser.email!);
+
+                    if (existingUser) {
+                        // CASE: User exists in DB! Log them in normally.
+                        console.log("User found in DB, logging in...");
+                        setCurrentUser(existingUser);
+                        setHistory([]);
+                        
+                        // Navigate to dashboard only if we are on a login/auth page to avoid disrupting navigation
+                        if (['login', 'signup', 'roleChooser'].includes(page)) {
+                            navigateTo(existingUser.role === 'fan' ? 'fanDashboard' : 'creatorDashboard');
+                        }
+                    } else {
+                        // CASE: User is NEW (Authenticated via Google/Email but not in 'users' table yet).
+                        // Do NOT create them here. Send them to Role Chooser to pick Fan/Creator.
+                        console.log("User not found in DB, redirecting to Role Chooser...");
+                        
+                        // Only redirect if we aren't already on a setup page to avoid loops
+                        if (page !== 'roleChooser' && page !== 'signup') {
+                            setPendingUser({ 
+                                name: authUser.user_metadata?.full_name || authUser.email?.split('@')[0] || 'New User', 
+                                email: authUser.email!, 
+                                password: '', 
+                                authUserId: authUser.id 
+                            });
+                            navigateTo('roleChooser');
+                        }
+                    }
                 } catch (error) {
                     console.error('Auth state change error:', error);
+                    showAlert('LOGIN ERROR', 'Could not verify account. Please check console.');
                 }
             } else {
+                // No auth user (Logged out)
                 setCurrentUser(null);
-                setPage('login');
+                if (page !== 'signup') {
+                    setPage('login');
+                }
             }
+            setAuthLoading(false);
         });
 
         return () => {
             authListener?.subscription.unsubscribe();
         };
-    }, []);
+    }, [page]);
 
-    // Load initial data
+    // --- DATA LOADING ---
+
+    // Load initial data (Clubs, Posts, etc.)
     useEffect(() => {
         const loadData = async () => {
             try {
@@ -80,18 +109,22 @@ export default function App() {
                 setAppData(state);
             } catch (error) {
                 console.error('Failed to load data:', error);
-                showAlert('ERROR', 'Failed to load data from server. Please refresh.');
+                // Only show alert if we are logged in, otherwise it might just be RLS blocking public access
+                if (currentUser) {
+                    showAlert('ERROR', 'Failed to load data from server. Please refresh.');
+                }
             } finally {
                 setIsLoading(false);
             }
         };
         
+        // Only load data if we aren't checking auth
         if (!authLoading) {
             loadData();
         }
-    }, [authLoading]);
+    }, [authLoading, currentUser]); // Reload if auth state changes
 
-    // Subscribe to database changes
+    // Subscribe to real-time database changes
     useEffect(() => {
         const unsubscribe = database.subscribe(async () => {
             const state = await database.getState();
@@ -100,24 +133,13 @@ export default function App() {
         return () => unsubscribe();
     }, []);
 
-    const [page, setPage] = useState(() => {
-        if (currentUser) {
-            return currentUser.role === 'fan' ? 'fanDashboard' : 'creatorDashboard';
-        }
-        return 'login';
-    });
-
-    const [pageContext, setPageContext] = useState<PageContext>({});
-    const [history, setHistory] = useState<{ page: string; pageContext: PageContext }[]>([]);
-    const [pendingUser, setPendingUser] = useState<{ name: string; email: string; password: string; authUserId?: string } | null>(null);
-    const [modal, setModal] = useState({ isOpen: false, title: '', message: '' });
 
     const showAlert = (title: string, message: string) => {
         setModal({ isOpen: true, title, message });
     };
 
     const navigateTo = (pageName: string, context: PageContext = {}) => {
-        setHistory([...history, { page, pageContext }]);
+        setHistory(prev => [...prev, { page, pageContext }]);
         setPage(pageName);
         setPageContext(context);
     };
@@ -127,7 +149,7 @@ export default function App() {
             const lastState = history[history.length - 1];
             setPage(lastState.page);
             setPageContext(lastState.pageContext);
-            setHistory(history.slice(0, -1));
+            setHistory(prev => prev.slice(0, -1));
         }
     };
     
@@ -135,10 +157,7 @@ export default function App() {
         try {
             const { user } = await auth.signInWithPassword(email, password);
             if (user) {
-                const appUser = await auth.getOrCreateAppUser(user);
-                setCurrentUser(appUser);
-                setHistory([]);
-                navigateTo(appUser.role === 'fan' ? 'fanDashboard' : 'creatorDashboard');
+                // The onAuthStateChange listener will handle the rest (DB check & redirect)
                 return true;
             }
             return false;
@@ -179,6 +198,7 @@ export default function App() {
         try {
             const authUser = await auth.getAuthUser();
             if (authUser) {
+                // NOW we create the user in the DB, because we know the role
                 const appUser = await auth.getOrCreateAppUser(authUser, role);
                 setCurrentUser(appUser);
                 setPendingUser(null);
@@ -194,8 +214,7 @@ export default function App() {
     const handleGoogleSignIn = async () => {
         try {
             await auth.signInWithGoogle();
-            // The auth state change listener will handle the rest
-            // User will be redirected back after Google auth
+            // User will be redirected to external provider
         } catch (error: any) {
             console.error('Google sign in error:', error);
             showAlert('ERROR', error.message || 'Failed to sign in with Google. Please try again.');
@@ -329,13 +348,13 @@ export default function App() {
     const allUsers = Object.values(users);
 
     // Show loading state during auth check
-    if (authLoading || isLoading) {
+    if (authLoading) {
         return (
             <div className="comic-book-style min-h-screen flex items-center justify-center">
                 <ComicBookStyles />
                 <div className="text-center">
                     <h1 className="text-6xl mb-4">LOADING...</h1>
-                    <p className="text-xl">Fetching your awesome content!</p>
+                    <p className="text-xl">Checking your credentials!</p>
                 </div>
             </div>
         );

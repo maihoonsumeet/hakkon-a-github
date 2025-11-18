@@ -1,15 +1,41 @@
 import { supabase } from './supabase';
 import type { User } from '../types';
 
+function productionRedirect() {
+  // your production URL — change if your Vercel domain differs
+  return 'https://hakkon-a-github.vercel.app/';
+}
+
+function devRedirect() {
+  // local dev URL you use with Vite
+  return 'http://localhost:5173/';
+}
+
+/**
+ * Choose redirect based on runtime host.
+ * If running on localhost, return local dev redirect, otherwise production.
+ */
+function chooseRedirect() {
+  try {
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    if (host === 'localhost' || host === '127.0.0.1') return devRedirect();
+  } catch (e) {
+    // fallback to production if window isn't available
+  }
+  return productionRedirect();
+}
+
 export const auth = {
   /**
    * Sign in with Google OAuth
    */
   async signInWithGoogle() {
+    const redirectTo = chooseRedirect();
+
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: `${window.location.origin}/`, // Redirects back to your app
+        redirectTo,
         queryParams: {
           access_type: 'offline',
           prompt: 'consent',
@@ -124,14 +150,16 @@ export const auth = {
     }
 
     // Create new user in our users table
-    const userName = authUser.user_metadata?.name || 
-                     authUser.user_metadata?.full_name || 
-                     authUser.email?.split('@')[0] || 
-                     'User';
-    
-    const userAvatar = authUser.user_metadata?.avatar_url || 
-                       authUser.user_metadata?.picture ||
-                       `https://placehold.co/100x100/A78BFA/FFFFFF?text=${userName.charAt(0)}`;
+    const userName =
+      authUser.user_metadata?.name ||
+      authUser.user_metadata?.full_name ||
+      authUser.email?.split('@')[0] ||
+      'User';
+
+    const userAvatar =
+      authUser.user_metadata?.avatar_url ||
+      authUser.user_metadata?.picture ||
+      `https://placehold.co/100x100/A78BFA/FFFFFF?text=${userName.charAt(0)}`;
 
     const { data: newUser, error } = await supabase
       .from('users')
