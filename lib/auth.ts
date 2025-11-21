@@ -1,28 +1,20 @@
 import { supabase } from './supabase';
 import type { User } from '../types';
 
-function productionRedirect() {
-  // your production URL — change if your Vercel domain differs
-  return 'https://hakkon-a-github.vercel.app/';
-}
-
-function devRedirect() {
-  // local dev URL you use with Vite
-  return 'http://localhost:5173/';
-}
-
 /**
- * Choose redirect based on runtime host.
- * If running on localhost, return local dev redirect, otherwise production.
+ * Get the correct redirect URL based on current environment
  */
-function chooseRedirect() {
-  try {
-    const host = typeof window !== 'undefined' ? window.location.hostname : '';
-    if (host === 'localhost' || host === '127.0.0.1') return devRedirect();
-  } catch (e) {
-    // fallback to production if window isn't available
+function getRedirectUrl() {
+  if (typeof window === 'undefined') {
+    // Server-side: use production URL
+    return 'https://hakkon-a-github.vercel.app/';
   }
-  return productionRedirect();
+
+  // Client-side: use current origin
+  const origin = window.location.origin;
+  
+  // Always use the current URL (works for localhost AND production)
+  return origin + '/';
 }
 
 export const auth = {
@@ -30,7 +22,7 @@ export const auth = {
    * Sign in with Google OAuth
    */
   async signInWithGoogle() {
-    const redirectTo = chooseRedirect();
+    const redirectTo = getRedirectUrl();
 
     const { data, error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
